@@ -80,7 +80,7 @@ const getScopedSupabase = (authHeader: string) => {
 
 // Validation Schema
 const consultoriaSchema = z.object({
-  message: z.string().min(1, "Message is required"),
+  message: z.string().default(''),
   conversationId: z.string().nullable().optional(),
   history: z.preprocess(
     (value) => {
@@ -208,6 +208,10 @@ app.post('/api/consultoria', requireAuth, upload.array('files'), async (req: Req
     let { message, history, focus, language, toneLevel } = validated;
     let { conversationId } = validated;
 
+    if (!message.trim() && (!files || files.length === 0)) {
+      return res.status(400).json({ error: 'É necessário enviar uma mensagem ou anexar arquivos.' });
+    }
+
     if (files && files.length > 0) {
       let attachmentsContent = '\n\n--- ARQUIVOS ANEXADOS ---\n';
       
@@ -225,16 +229,22 @@ app.post('/api/consultoria', requireAuth, upload.array('files'), async (req: Req
             content = file.buffer.toString('utf-8');
           }
           
-          attachmentsContent += `\n[Arquivo: ${file.originalname}]\n${content}\n-------------------\n`;
+          if (!content.trim()) {
+            attachmentsContent += `\n[Arquivo: ${file.originalname}] (Conteúdo vazio ou não foi possível extrair texto)\n-------------------\n`;
+          } else {
+            attachmentsContent += `\n[Arquivo: ${file.originalname}]\n${content}\n-------------------\n`;
+          }
         } catch (error) {
-          console.error(`Error processing file ${file.originalname}:`, error);
-          attachmentsContent += `\n[Arquivo: ${file.originalname}] (Erro ao processar conteúdo)\n`;
+          console.error(`Error processing file ${file.originalname} (${file.mimetype}):`, error);
+          attachmentsContent += `\n[Arquivo: ${file.originalname}] (Erro ao processar conteúdo: ${error instanceof Error ? error.message : 'Unknown error'})\n`;
         }
       }
       
       attachmentsContent += '\n--- FIM DOS ARQUIVOS ---';
       message += attachmentsContent;
     }
+
+    console.log(`Final message length to Gemini: ${message.length} characters`);
 
     // Setup Gemini
     const targetLanguage = LANGUAGE_MAP[language || 'en'] || 'English';
