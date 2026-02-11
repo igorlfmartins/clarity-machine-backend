@@ -3,6 +3,7 @@ import express, { type Request, type Response, type NextFunction } from 'express
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import multer from 'multer';
 import { z } from 'zod';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { createClient } from '@supabase/supabase-js';
@@ -16,13 +17,9 @@ import { requireAuth } from './middleware/auth.js';
 const app = express();
 
 // Security Middleware
-app.use(helmet({ contentSecurityPolicy: false }));
+app.use(helmet());
 
-const allowedOrigins = [
-  'http://localhost:5173',
-  'http://localhost:5174',
-  'http://localhost:5175',
-  'http://localhost:3000',
+const productionOrigins = [
   process.env.FRONTEND_URL,
   'https://clarity-machine.up.railway.app',
   'https://clarity-machine-frontend.up.railway.app',
@@ -30,11 +27,23 @@ const allowedOrigins = [
   'https://www.claritymachine.weareup.studio'
 ].filter((url): url is string => !!url).map(url => url.replace(/\/$/, ''));
 
+const devOrigins = [
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:5175',
+  'http://localhost:3000',
+];
+
+const allowedOrigins = process.env.NODE_ENV === 'production'
+  ? productionOrigins
+  : [...productionOrigins, ...devOrigins];
+
 app.use(cors({
   origin: (origin, callback) => {
+    // Permite requisições sem origin (como apps mobile ou curl)
     if (!origin) return callback(null, true);
     
-    if (allowedOrigins.includes(origin) || !process.env.NODE_ENV) {
+    if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
       console.warn(`Blocked by CORS: ${origin}`);
@@ -70,16 +79,55 @@ const getScopedSupabase = (authHeader: string) => {
 // Validation Schema
 const consultoriaSchema = z.object({
   message: z.string().min(1, "Message is required"),
-  conversationId: z.string().nullable().optional(), // Added conversationId
-  history: z.array(
-    z.object({
-      role: z.enum(['user', 'model']),
-      parts: z.array(z.object({ text: z.string() }))
-    })
-  ).optional(),
+  conversationId: z.string().nullable().optional(),
+  history: z.preprocess(
+    (value) => {
+      if (typeof value === 'string') {
+        try {
+          return JSON.parse(value);
+        } catch {
+          return [];
+        }
+      }
+      return value;
+    },
+    z.array(
+      z.object({
+        role: z.enum(['user', 'model']),
+        parts: z.array(z.object({ text: z.string() }))
+      })
+    ).optional()
+  ),
   focus: z.string().nullable().optional(),
   language: z.string().optional(),
-  toneLevel: z.number().int().min(1).max(3).optional()
+  toneLevel: z.preprocess(
+    (value) => {
+      if (typeof value === 'string') {
+        return parseInt(value, 10);
+      }
+      return value;
+    },
+    z.number().int().min(1).max(3).optional()
+  )
+});
+
+const storage = multer.memoryStorage();
+const allowedMimeTypes = new Set([
+  'text/plain',
+  'text/markdown',
+  'text/csv',
+  'application/json'
+]);
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (allowedMimeTypes.has(file.mimetype)) {
+      cb(null, true);
+      return;
+    }
+    cb(new Error('Invalid file type'));
+  }
 });
 
 const geminiKey = process.env.GEMINI_API_KEY;
@@ -146,11 +194,17 @@ app.delete('/api/chats/:id', requireAuth, async (req: Request, res: Response) =>
 
 // --- Main Consultoria Route ---
 
-app.post('/api/consultoria', requireAuth, async (req: Request, res: Response) => {
+app.post('/api/consultoria', requireAuth, upload.single('file'), async (req: Request, res: Response) => {
   try {
     const validated = consultoriaSchema.parse(req.body);
-    const { message, history, focus, language, toneLevel } = validated;
+    let { message, history, focus, language, toneLevel } = validated;
     let { conversationId } = validated;
+
+    if (req.file) {
+      const fileContent = req.file.buffer.toString('utf-8');
+      const fileName = req.file.originalname;
+      message = `${message}\n\n--- ARQUIVO ANEXADO: ${fileName} ---\n${fileContent}\n--- FIM DO ARQUIVO ---`;
+    }
 
     // Setup Gemini
     const targetLanguage = LANGUAGE_MAP[language || 'en'] || 'English';
@@ -206,7 +260,7 @@ app.post('/api/consultoria', requireAuth, async (req: Request, res: Response) =>
       }
     });
 
-    const chat = model.startChat({ history: history || [] });
+    const chat = model.startChat({ history: (history as any) || [] });
     const result = await chat.sendMessage(message);
     const response = result.response.text();
 
@@ -244,6 +298,20 @@ app.post('/api/consultoria', requireAuth, async (req: Request, res: Response) =>
 
 // Error handling middleware
 app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      res.status(400).json({ error: 'Arquivo excede o limite de 5MB.' });
+      return;
+    }
+    res.status(400).json({ error: `Erro no upload: ${err.message}` });
+    return;
+  }
+
+  if (err instanceof Error && err.message === 'Invalid file type') {
+    res.status(400).json({ error: 'Tipo de arquivo inválido. Use .txt, .md, .csv ou .json.' });
+    return;
+  }
+
   console.error(err);
   res.status(500).send('Something broke!');
 });
