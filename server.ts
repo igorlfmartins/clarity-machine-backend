@@ -196,6 +196,9 @@ app.delete('/api/chats/:id', requireAuth, async (req: Request, res: Response) =>
 
 app.post('/api/consultoria', requireAuth, upload.single('file'), async (req: Request, res: Response) => {
   try {
+    console.log('Consultoria Request Body:', JSON.stringify(req.body, null, 2));
+    console.log('Consultoria Request File:', req.file ? `${req.file.originalname} (${req.file.size} bytes)` : 'No file');
+
     const validated = consultoriaSchema.parse(req.body);
     let { message, history, focus, language, toneLevel } = validated;
     let { conversationId } = validated;
