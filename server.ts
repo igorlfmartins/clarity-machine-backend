@@ -80,8 +80,20 @@ const getScopedSupabase = (authHeader: string) => {
 
 // Validation Schema
 const consultoriaSchema = z.object({
-  message: z.string().default(''),
-  conversationId: z.string().nullable().optional(),
+  message: z.preprocess(
+    (val) => {
+      if (val === undefined || val === null) return '';
+      return String(val);
+    },
+    z.string()
+  ),
+  conversationId: z.preprocess(
+    (val) => {
+      if (val === 'null' || val === 'undefined') return null;
+      return val;
+    },
+    z.string().nullable().optional()
+  ),
   history: z.preprocess(
     (value) => {
       if (typeof value === 'string') {
@@ -317,6 +329,7 @@ app.post('/api/consultoria', requireAuth, upload.array('files'), async (req: Req
 
   } catch (err: unknown) {
     if (err instanceof z.ZodError) {
+      console.error('Zod Validation Error:', JSON.stringify(err.format(), null, 2));
       return res.status(400).json({ error: err.format() });
     }
     console.error('consultoria error:', err);
