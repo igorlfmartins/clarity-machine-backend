@@ -13,6 +13,8 @@ import { setupLiveProxy } from './live_proxy.js';
 import { UNIFIED_AGENT_PROMPT, TONE_INSTRUCTIONS } from './agents.js';
 import { LANGUAGE_MAP, PROMPT_MAP, MODEL_NAME } from './config.js';
 import { requireAuth } from './middleware/auth.js';
+import pdf from 'pdf-parse';
+import mammoth from 'mammoth';
 
 const app = express();
 
@@ -116,11 +118,13 @@ const allowedMimeTypes = new Set([
   'text/plain',
   'text/markdown',
   'text/csv',
-  'application/json'
+  'application/json',
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 ]);
 const upload = multer({
   storage,
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: 10 * 1024 * 1024 }, // Increased to 10MB
   fileFilter: (_req, file, cb) => {
     if (allowedMimeTypes.has(file.mimetype)) {
       cb(null, true);
@@ -194,19 +198,42 @@ app.delete('/api/chats/:id', requireAuth, async (req: Request, res: Response) =>
 
 // --- Main Consultoria Route ---
 
-app.post('/api/consultoria', requireAuth, upload.single('file'), async (req: Request, res: Response) => {
+app.post('/api/consultoria', requireAuth, upload.array('files'), async (req: Request, res: Response) => {
   try {
     console.log('Consultoria Request Body:', JSON.stringify(req.body, null, 2));
-    console.log('Consultoria Request File:', req.file ? `${req.file.originalname} (${req.file.size} bytes)` : 'No file');
+    const files = req.files as Express.Multer.File[];
+    console.log('Consultoria Request Files:', files?.map(f => `${f.originalname} (${f.size} bytes)`).join(', ') || 'No files');
 
     const validated = consultoriaSchema.parse(req.body);
     let { message, history, focus, language, toneLevel } = validated;
     let { conversationId } = validated;
 
-    if (req.file) {
-      const fileContent = req.file.buffer.toString('utf-8');
-      const fileName = req.file.originalname;
-      message = `${message}\n\n--- ARQUIVO ANEXADO: ${fileName} ---\n${fileContent}\n--- FIM DO ARQUIVO ---`;
+    if (files && files.length > 0) {
+      let attachmentsContent = '\n\n--- ARQUIVOS ANEXADOS ---\n';
+      
+      for (const file of files) {
+        let content = '';
+        try {
+          if (file.mimetype === 'application/pdf') {
+            const data = await pdf(file.buffer);
+            content = data.text;
+          } else if (file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+            const result = await mammoth.extractRawText({ buffer: file.buffer });
+            content = result.value;
+          } else {
+            // Text based files
+            content = file.buffer.toString('utf-8');
+          }
+          
+          attachmentsContent += `\n[Arquivo: ${file.originalname}]\n${content}\n-------------------\n`;
+        } catch (error) {
+          console.error(`Error processing file ${file.originalname}:`, error);
+          attachmentsContent += `\n[Arquivo: ${file.originalname}] (Erro ao processar conteúdo)\n`;
+        }
+      }
+      
+      attachmentsContent += '\n--- FIM DOS ARQUIVOS ---';
+      message += attachmentsContent;
     }
 
     // Setup Gemini
