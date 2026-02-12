@@ -1,8 +1,8 @@
 import { WebSocket, WebSocketServer } from 'ws';
 import type { Server } from 'http';
-import 'dotenv/config';
 import { UNIFIED_AGENT_PROMPT, TONE_INSTRUCTIONS } from './agents.js';
 import { supabase } from './supabase.js';
+import { env } from './config/env.js';
 
 const GOOGLE_LIVE_API_URL = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.MultimodalLive';
 
@@ -44,14 +44,7 @@ export function setupLiveProxy(server: Server) {
   wss.on('connection', (ws: WebSocket) => {
     console.log('Live mode client connected');
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      console.error('CRITICAL ERROR: GEMINI_API_KEY missing');
-      ws.close(1011, 'Server Error: API Key Missing');
-      return;
-    }
-
-    const googleUrl = `${GOOGLE_LIVE_API_URL}?key=${apiKey}`;
+    const googleUrl = `${GOOGLE_LIVE_API_URL}?key=${env.GEMINI_API_KEY}`;
     const googleWs = new WebSocket(googleUrl);
 
     // Track connection state

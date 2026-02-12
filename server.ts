@@ -7,38 +7,36 @@ import multer from 'multer';
 import { z } from 'zod';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { createClient } from '@supabase/supabase-js';
-import 'dotenv/config';
 import { createServer } from 'http';
 import { setupLiveProxy } from './live_proxy.js';
 import { UNIFIED_AGENT_PROMPT, TONE_INSTRUCTIONS } from './agents.js';
 import { LANGUAGE_MAP, PROMPT_MAP, MODEL_NAME } from './config.js';
 import { requireAuth } from './middleware/auth.js';
+import { env, isProduction, getAllowedOrigins } from './config/env.js';
 import pdf from 'pdf-parse';
 import mammoth from 'mammoth';
 
 const app = express();
 
-// Security Middleware
-app.use(helmet());
+// Security Middleware - Content Security Policy
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'", "https:", "wss:"], // Allow HTTPS and WebSocket connections
+      fontSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      mediaSrc: ["'self'"],
+      frameSrc: ["'none'"],
+    },
+  },
+  crossOriginEmbedderPolicy: false // Necessário para Supabase
+}));
 
-const productionOrigins = [
-  process.env.FRONTEND_URL,
-  'https://clarity-machine.up.railway.app',
-  'https://clarity-machine-frontend.up.railway.app',
-  'https://claritymachine.weareup.studio',
-  'https://www.claritymachine.weareup.studio'
-].filter((url): url is string => !!url).map(url => url.replace(/\/$/, ''));
-
-const devOrigins = [
-  'http://localhost:5173',
-  'http://localhost:5174',
-  'http://localhost:5175',
-  'http://localhost:3000',
-];
-
-const allowedOrigins = process.env.NODE_ENV === 'production'
-  ? productionOrigins
-  : [...productionOrigins, ...devOrigins];
+const allowedOrigins = getAllowedOrigins();
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -53,7 +51,7 @@ app.use(cors({
     }
   },
   methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
 app.use(express.json());
@@ -73,7 +71,7 @@ app.use((req, res, next) => {
 
 // Helper: Get Scoped Supabase Client
 const getScopedSupabase = (authHeader: string) => {
-  return createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!, {
+  return createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
     global: { headers: { Authorization: authHeader } }
   });
 };
@@ -146,8 +144,7 @@ const upload = multer({
   }
 });
 
-const geminiKey = process.env.GEMINI_API_KEY;
-const genAI = geminiKey ? new GoogleGenerativeAI(geminiKey) : null;
+const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY);
 
 // Routes
 app.get('/', (req: Request, res: Response) => {
@@ -365,11 +362,20 @@ app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
     return;
   }
 
-  console.error(err);
-  res.status(500).send('Something broke!');
+  console.error('Unhandled error:', err);
+  
+  // Don't expose internal errors in production
+  const message = isProduction() 
+    ? 'Internal server error' 
+    : (err as Error).message || 'Unknown error';
+    
+  res.status(500).json({ 
+    error: message,
+    ...(isProduction() ? {} : { stack: (err as Error).stack })
+  });
 });
 
-const port = process.env.PORT || 3000;
+const port = env.PORT;
 const httpServer = createServer(app);
 setupLiveProxy(httpServer);
 
